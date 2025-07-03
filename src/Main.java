@@ -178,6 +178,41 @@ public class Main {
                 responseThread.setDaemon(true);
                 responseThread.start();
 
+                // Add a keyboard input handler thread to watch for command keys
+                Thread keyboardThread = new Thread(() -> {
+                    Scanner scanner = new Scanner(System.in);
+                    regularOutput.println("Press 'i' to update system instructions, or 'q' to quit");
+
+                    while (true) {
+                        try {
+                            String input = scanner.nextLine().trim();
+
+                            if (input.equalsIgnoreCase("i")) {
+                                // Prompt for new system instruction
+                                regularOutput.println("\nEnter new system instruction (press Enter when done):");
+                                String newInstruction = scanner.nextLine();
+                                if (!newInstruction.trim().isEmpty()) {
+                                    systemInstruction = newInstruction.trim();
+                                    regularOutput.println("System instruction updated: \"" + systemInstruction + "\"");
+                                    if (aiOutput != regularOutput) {
+                                        aiOutput.println("System instruction updated: \"" + systemInstruction + "\"");
+                                    }
+                                } else {
+                                    regularOutput.println("Instruction unchanged (empty input)");
+                                }
+                                regularOutput.println("\nPress 'i' to update system instructions, or 'q' to quit");
+                            } else if (input.equalsIgnoreCase("q")) {
+                                regularOutput.println("Exiting...");
+                                System.exit(0);
+                            }
+                        } catch (Exception e) {
+                            regularOutput.println("Error reading keyboard input: " + e.getMessage());
+                        }
+                    }
+                });
+                keyboardThread.setDaemon(true);
+                keyboardThread.start();
+
                 // Audio capture loop
                 while (true) {
                     int bytesRead = microphone.read(buffer, 0, buffer.length);

@@ -18,16 +18,46 @@ import java.util.List;
 import java.util.Iterator;
 import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
+// A dedicated class to manage the instruction in a thread-safe way
+class InstructionManager {
+    // Using AtomicReference for thread safety
+    private static final AtomicReference<String> instruction =
+            new AtomicReference<>("You are a helpful assistant.");
+
+    // Get the current instruction
+    public static String get() {
+        return instruction.get();
+    }
+
+    // Update the instruction and return the new value
+    public static String set(String newInstruction, PrintStream output) {
+        if (newInstruction != null && !newInstruction.isEmpty()) {
+            String oldValue = instruction.getAndSet(newInstruction.trim());
+            output.println("**************************************");
+            output.println("SYSTEM INSTRUCTION CHANGED!");
+            output.println("OLD: \"" + oldValue + "\"");
+            output.println("NEW: \"" + instruction.get() + "\"");
+            output.println("**************************************");
+            return instruction.get();
+        }
+        return instruction.get();
+    }
+}
+
 public class Main {
     private static final String OPENAI_API_KEY = System.getenv("OPENAI_API_KEY");
     private static final String CEREBRAS_API_KEY = System.getenv("CEREBRAS_API_KEY");
-    private static String systemInstruction = "You are a helpful assistant.";
+
+    // Adding a flag that can be used to signal program exit
+    private static volatile boolean shouldExit = false;
+
     // Rate limiting configuration - minimum time between API requests in milliseconds
     private static final long RATE_LIMIT_MS = 1000; // 1 second between requests
     private static long lastRequestTime = 0;
@@ -69,16 +99,37 @@ public class Main {
         // List available mixers and their target lines
         Mixer.Info[] mixers = AudioSystem.getMixerInfo();
         regularOutput.println("Available audio input devices:");
+
+        // Filter to only include input devices
+        List<Mixer.Info> inputDevices = new ArrayList<>();
         for (int i = 0; i < mixers.length; i++) {
             Mixer mixer = AudioSystem.getMixer(mixers[i]);
             Line.Info[] targetLineInfo = mixer.getTargetLineInfo();
             if (targetLineInfo.length > 0) {
-                regularOutput.println(i + ": " + mixers[i].getName() + " - " + mixers[i].getDescription());
+                inputDevices.add(mixers[i]);
+                regularOutput.println(inputDevices.size() - 1 + ": " + mixers[i].getName() + " - " + mixers[i].getDescription());
             }
         }
-        Mixer.Info micInput = Arrays.stream(mixers)
-                .filter(mix -> mix.getName().equals("MacBook Air Microphone"))
-                .findFirst().get();
+
+        // Prompt user to select an input device
+        regularOutput.println("\nEnter the number of the input device to use:");
+        Scanner deviceScanner = new Scanner(System.in);
+        int deviceIndex = -1;
+        while (deviceIndex < 0 || deviceIndex >= inputDevices.size()) {
+            try {
+                String input = deviceScanner.nextLine().trim();
+                deviceIndex = Integer.parseInt(input);
+                if (deviceIndex < 0 || deviceIndex >= inputDevices.size()) {
+                    regularOutput.println("Invalid selection. Please enter a number between 0 and " + (inputDevices.size() - 1));
+                }
+            } catch (NumberFormatException e) {
+                regularOutput.println("Please enter a valid number");
+            }
+        }
+
+        Mixer.Info micInput = inputDevices.get(deviceIndex);
+        regularOutput.println("Selected input device: " + micInput.getName());
+
         Mixer micMixer = AudioSystem.getMixer(micInput);
         // Get the first available TargetDataLine from the selected mixer
         Line.Info[] targetLineInfos = micMixer.getTargetLineInfo();
@@ -183,30 +234,50 @@ public class Main {
                     Scanner scanner = new Scanner(System.in);
                     regularOutput.println("Press 'i' to update system instructions, or 'q' to quit");
 
-                    while (true) {
+                    while (!shouldExit) {
                         try {
-                            String input = scanner.nextLine().trim();
+                            // Check if there is input available
+                            if (System.in.available() > 0 || scanner.hasNextLine()) {
+                                // Wait for input
+                                String input = scanner.nextLine().trim();
 
-                            if (input.equalsIgnoreCase("i")) {
-                                // Prompt for new system instruction
-                                regularOutput.println("\nEnter new system instruction (press Enter when done):");
-                                String newInstruction = scanner.nextLine();
-                                if (!newInstruction.trim().isEmpty()) {
-                                    systemInstruction = newInstruction.trim();
-                                    regularOutput.println("System instruction updated: \"" + systemInstruction + "\"");
-                                    if (aiOutput != regularOutput) {
-                                        aiOutput.println("System instruction updated: \"" + systemInstruction + "\"");
+                                // Process the command
+                                if (input.equalsIgnoreCase("i")) {
+                                    // Prompt for new system instruction
+                                    regularOutput.println("\nEnter new system instruction (press Enter when done):");
+
+                                    // Make sure we can read the next line
+                                    String newInstruction = scanner.nextLine();
+
+                                    if (!newInstruction.trim().isEmpty()) {
+                                        // Update the instruction
+                                        String verifiedInstruction = InstructionManager.set(newInstruction.trim(), regularOutput);
+
+                                        // Verify the update worked by retrieving the current value
+                                        regularOutput.println("Verification - Current system instruction: \"" + verifiedInstruction + "\"");
+
+                                        if (aiOutput != regularOutput) {
+                                            aiOutput.println("System instruction updated: \"" + verifiedInstruction + "\"");
+                                        }
+                                    } else {
+                                        regularOutput.println("Instruction unchanged (empty input)");
                                     }
-                                } else {
-                                    regularOutput.println("Instruction unchanged (empty input)");
+
+                                    regularOutput.println("\nPress 'i' to update system instructions, or 'q' to quit");
+                                } else if (input.equalsIgnoreCase("q")) {
+                                    regularOutput.println("Exiting...");
+                                    shouldExit = true;
+                                    System.exit(0);
                                 }
-                                regularOutput.println("\nPress 'i' to update system instructions, or 'q' to quit");
-                            } else if (input.equalsIgnoreCase("q")) {
-                                regularOutput.println("Exiting...");
-                                System.exit(0);
+                            } else {
+                                // Short sleep to prevent CPU hogging
+                                Thread.sleep(100);
                             }
                         } catch (Exception e) {
                             regularOutput.println("Error reading keyboard input: " + e.getMessage());
+                            e.printStackTrace();
+                            // Reset the scanner after an error
+                            scanner = new Scanner(System.in);
                         }
                     }
                 });
@@ -214,7 +285,7 @@ public class Main {
                 keyboardThread.start();
 
                 // Audio capture loop
-                while (true) {
+                while (!shouldExit) {
                     int bytesRead = microphone.read(buffer, 0, buffer.length);
                     if (bytesRead > 0) {
                         stream.send(StreamingRecognizeRequest.newBuilder()
@@ -300,7 +371,7 @@ public class Main {
         // Create the request body
         String jsonInputString = String.format(
             "{\"model\": \"gpt-4-turbo\", \"messages\": [{\"role\": \"system\", \"content\": \"%s\"}, {\"role\": \"user\", \"content\": \"%s\"}]}",
-            systemInstruction.replace("\"", "\\\""),
+            InstructionManager.get().replace("\"", "\\\""),
             question.replace("\"", "\\\"")
         );
 
@@ -332,75 +403,94 @@ public class Main {
     }
 
     private static String callCerebras(String question) throws IOException {
-        // Cerebras API implementation - corrected as per curl example
-        URL url = new URL("https://api.cerebras.ai/v1/chat/completions");
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + CEREBRAS_API_KEY);
-        connection.setDoOutput(true);
-        connection.setConnectTimeout(10000); // 10 seconds timeout
-        connection.setReadTimeout(30000);    // 30 seconds read timeout
+        // Flag to control whether to actually make API requests or just simulate them
+        final boolean ENABLE_API_REQUESTS = false;
 
-        // Create the request body for Cerebras API format - using chat completions format
+        // Get the current instruction directly from the InstructionManager
+        String currentInstruction = InstructionManager.get();
+
+        // Create the request body for Cerebras API format
         String jsonInputString = String.format(
             "{\"model\": \"llama-4-scout-17b-16e-instruct\", " +
             "\"stream\": false, " +
-            "\"messages\": [{\"content\": \"%s\", \"role\": \"user\"}], " +
+            "\"messages\": [" +
+            "{\"content\": \"%s\", \"role\": \"system\"}, " +
+            "{\"content\": \"%s\", \"role\": \"user\"}" +
+            "], " +
             "\"temperature\": 0, " +
             "\"max_tokens\": -1, " +
             "\"seed\": 0, " +
             "\"top_p\": 1}",
+            currentInstruction.replace("\"", "\\\""),
             question.replace("\"", "\\\"")
         );
 
-        // Send the request
-        try (OutputStream os = connection.getOutputStream()) {
-            byte[] input = jsonInputString.getBytes(StandardCharsets.UTF_8);
-            os.write(input, 0, input.length);
-        }
+        // Debug: Log the actual instruction and request being used
+        regularOutput.println("INSTRUCTION CHECK - Current system instruction: \"" + currentInstruction + "\"");
+        regularOutput.println("DEBUG - Sending Cerebras API request with system instruction: \"" + currentInstruction + "\"");
+        regularOutput.println("DEBUG - Full request body: " + jsonInputString);
 
-        // Check if the request was successful
-        int responseCode = connection.getResponseCode();
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            BufferedReader errorReader = new BufferedReader(new InputStreamReader(
-                    connection.getErrorStream(), StandardCharsets.UTF_8));
-            StringBuilder errorResponse = new StringBuilder();
-            String errorLine;
-            while ((errorLine = errorReader.readLine()) != null) {
-                errorResponse.append(errorLine);
+        // Check if we should actually make the API request
+        if (ENABLE_API_REQUESTS) {
+            // Only set up the connection and make the actual API call if enabled
+            URL url = new URL("https://api.cerebras.ai/v1/chat/completions");
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Authorization", "Bearer " + CEREBRAS_API_KEY);
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(10000); // 10 seconds timeout
+            connection.setReadTimeout(30000);    // 30 seconds read timeout
+
+            // Send the request
+            try (OutputStream os = connection.getOutputStream()) {
+                byte[] input = jsonInputString.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
             }
-            errorReader.close();
-            throw new IOException("Cerebras API error: " + responseCode + " - " + errorResponse.toString());
-        }
 
-        // Read the successful response
-        StringBuilder response = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                connection.getInputStream(), StandardCharsets.UTF_8))) {
-            String responseLine;
-            while ((responseLine = br.readLine()) != null) {
-                response.append(responseLine.trim());
+            // Check if the request was successful
+            int responseCode = connection.getResponseCode();
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                BufferedReader errorReader = new BufferedReader(new InputStreamReader(
+                        connection.getErrorStream(), StandardCharsets.UTF_8));
+                StringBuilder errorResponse = new StringBuilder();
+                String errorLine;
+                while ((errorLine = errorReader.readLine()) != null) {
+                    errorResponse.append(errorLine);
+                }
+                errorReader.close();
+                throw new IOException("Cerebras API error: " + responseCode + " - " + errorResponse.toString());
             }
-        }
 
-        // Parse the JSON response to extract the completion
-        // In production, use a proper JSON parser like Jackson or Gson
-        String jsonResponse = response.toString();
+            // Read the successful response
+            StringBuilder response = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(
+                    connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String responseLine;
+                while ((responseLine = br.readLine()) != null) {
+                    response.append(responseLine.trim());
+                }
+            }
 
-        // Extract response based on chat/completions format
-        // Format is similar to OpenAI: {"choices":[{"message":{"content":"..."},...
-        int contentStart = jsonResponse.indexOf("\"content\":\"") + 11;
-        int contentEnd = jsonResponse.indexOf("\"", contentStart);
-        if (contentStart > 7 && contentEnd > contentStart) {
-            return jsonResponse.substring(contentStart, contentEnd)
-                   .replace("\\n", "\n")
-                   .replace("\\\"", "\"")
-                   .trim();
+            // Parse the JSON response to extract the completion
+            String jsonResponse = response.toString();
+            int contentStart = jsonResponse.indexOf("\"content\":\"") + 11;
+            int contentEnd = jsonResponse.indexOf("\"", contentStart);
+            if (contentStart > 7 && contentEnd > contentStart) {
+                return jsonResponse.substring(contentStart, contentEnd)
+                       .replace("\\n", "\n")
+                       .replace("\\\"", "\"")
+                       .trim();
+            } else {
+                // Fallback for parsing errors
+                regularOutput.println("Warning: Failed to parse Cerebras API response. Raw response: " + jsonResponse);
+                return "I received a response but couldn't parse it correctly.";
+            }
         } else {
-            // Fallback for parsing errors
-            regularOutput.println("Warning: Failed to parse Cerebras API response. Raw response: " + jsonResponse);
-            return "I received a response but couldn't parse it correctly.";
+            // API requests are disabled - return a mock response instead
+            regularOutput.println("REQUESTS DISABLED. Skipping sending request to Cerebras API.");
+            return "API requests are disabled. This is a mock response. Your request was: \"" +
+                   question + "\" with system instruction: \"" + currentInstruction + "\"";
         }
     }
 }

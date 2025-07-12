@@ -1,9 +1,7 @@
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
 // click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 import javax.sound.sampled.*;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.Arrays;
 import com.google.cloud.speech.v1.*;
 import com.google.protobuf.ByteString;
 import com.google.api.gax.rpc.BidiStream;
@@ -12,44 +10,14 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.io.FileOutputStream;
-import java.io.FileDescriptor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Iterator;
 import java.util.Scanner;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-
-// A dedicated class to manage the instruction in a thread-safe way
-class InstructionManager {
-    // Using AtomicReference for thread safety
-    private static final AtomicReference<String> instruction =
-            new AtomicReference<>("You are a helpful assistant.");
-
-    // Get the current instruction
-    public static String get() {
-        return instruction.get();
-    }
-
-    // Update the instruction and return the new value
-    public static String set(String newInstruction, PrintStream output) {
-        if (newInstruction != null && !newInstruction.isEmpty()) {
-            String oldValue = instruction.getAndSet(newInstruction.trim());
-            output.println("**************************************");
-            output.println("SYSTEM INSTRUCTION CHANGED!");
-            output.println("OLD: \"" + oldValue + "\"");
-            output.println("NEW: \"" + instruction.get() + "\"");
-            output.println("**************************************");
-            return instruction.get();
-        }
-        return instruction.get();
-    }
-}
 
 public class Main {
     private static final String OPENAI_API_KEY = System.getenv("OPENAI_API_KEY");
@@ -70,7 +38,7 @@ public class Main {
     // Flag to determine if AI output should be separated
     private static boolean separateAiOutput = Boolean.parseBoolean(System.getProperty("separate.ai.output", "false"));
 
-    public static void main(String[] args) throws LineUnavailableException, IOException {
+    public static void main(String[] args) throws LineUnavailableException {
         // Initialize separate output stream if requested
         if (separateAiOutput) {
             try {
@@ -100,14 +68,13 @@ public class Main {
         Mixer.Info[] mixers = AudioSystem.getMixerInfo();
         regularOutput.println("Available audio input devices:");
 
-        // Filter to only include input devices
         List<Mixer.Info> inputDevices = new ArrayList<>();
-        for (int i = 0; i < mixers.length; i++) {
-            Mixer mixer = AudioSystem.getMixer(mixers[i]);
+        for(Mixer.Info mxr:mixers) {
+            Mixer mixer = AudioSystem.getMixer(mxr);
             Line.Info[] targetLineInfo = mixer.getTargetLineInfo();
             if (targetLineInfo.length > 0) {
-                inputDevices.add(mixers[i]);
-                regularOutput.println(inputDevices.size() - 1 + ": " + mixers[i].getName() + " - " + mixers[i].getDescription());
+                inputDevices.add(mxr);
+                regularOutput.println(inputDevices.size() - 1 + ": " + mxr.getName() + " - " + mxr.getDescription());
             }
         }
 
@@ -195,11 +162,12 @@ public class Main {
                                             aiOutput.println(formattedOutput);
                                         }
 
-                                        // Process with OpenAI if it appears to be a question
+                                        // This is a very dumb way to do this. This whole block could possibly be removed.
                                         if (cleanedTranscript.contains("?") ||
                                             cleanedTranscript.toLowerCase().startsWith("how") ||
                                             cleanedTranscript.toLowerCase().startsWith("what") ||
                                             cleanedTranscript.toLowerCase().startsWith("why") ||
+                                            cleanedTranscript.toLowerCase().startsWith("tell") ||
                                             cleanedTranscript.toLowerCase().startsWith("when") ||
                                             cleanedTranscript.toLowerCase().startsWith("who") ||
                                             cleanedTranscript.toLowerCase().startsWith("where") ||
@@ -254,7 +222,7 @@ public class Main {
                                         String verifiedInstruction = InstructionManager.set(newInstruction.trim(), regularOutput);
 
                                         // Verify the update worked by retrieving the current value
-                                        regularOutput.println("Verification - Current system instruction: \"" + verifiedInstruction + "\"");
+                                        regularOutput.println("VERIFICATION - Current system instruction: \"" + InstructionManager.get() + "\"");
 
                                         if (aiOutput != regularOutput) {
                                             aiOutput.println("System instruction updated: \"" + verifiedInstruction + "\"");
@@ -330,7 +298,7 @@ public class Main {
 
         try {
             String apiResponse;
-            // Try OpenAI first, fall back to Cerebras if needed
+            //openAi is disabled because it is too slow. You might have a usecase that does not care about latency.
 //            if (OPENAI_API_KEY != null && !OPENAI_API_KEY.isEmpty()) {
 //                apiResponse = callOpenAI(question);
 //            } else
@@ -404,10 +372,13 @@ public class Main {
 
     private static String callCerebras(String question) throws IOException {
         // Flag to control whether to actually make API requests or just simulate them
-        final boolean ENABLE_API_REQUESTS = false;
+        final boolean ENABLE_API_REQUESTS = true;
 
-        // Get the current instruction directly from the InstructionManager
+        // Force refresh the current instruction by explicitly requesting it
         String currentInstruction = InstructionManager.get();
+
+        // Extra debugging to confirm we're using the correct instruction
+        regularOutput.println("FINAL VERIFICATION - Using instruction: \"" + currentInstruction + "\"");
 
         // Create the request body for Cerebras API format
         String jsonInputString = String.format(
@@ -426,7 +397,6 @@ public class Main {
         );
 
         // Debug: Log the actual instruction and request being used
-        regularOutput.println("INSTRUCTION CHECK - Current system instruction: \"" + currentInstruction + "\"");
         regularOutput.println("DEBUG - Sending Cerebras API request with system instruction: \"" + currentInstruction + "\"");
         regularOutput.println("DEBUG - Full request body: " + jsonInputString);
 
@@ -494,3 +464,4 @@ public class Main {
         }
     }
 }
+

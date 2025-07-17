@@ -22,6 +22,18 @@
       <artifactId>openai-java</artifactId>
       <version>2.12.0</version>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/dev.onvoid.webrtc/webrtc-java -->
+    <dependency>
+      <groupId>dev.onvoid.webrtc</groupId>
+      <artifactId>webrtc-java</artifactId>
+      <version>0.11.0</version>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/org.jnativehook/jnativehook -->
+    <dependency>
+      <groupId>org.jnativehook</groupId>
+      <artifactId>jnativehook</artifactId>
+      <version>2.0.2</version>
+    </dependency>
     <!-- Logging (optional, but useful for debugging) -->
     <dependency>
       <groupId>org.slf4j</groupId>

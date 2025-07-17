@@ -13,7 +13,7 @@ public class InstructionManager {
 
     // Private constructor to enforce singleton pattern
     private InstructionManager() {
-        currentInstruction = "You are a software engineer and systems architect with 10 years experience.";
+        currentInstruction = "You are a software engineer and systems architect with 10 years experience. Answer as concisely as possible.";
     }
 
     /**

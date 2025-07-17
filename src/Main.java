@@ -164,17 +164,17 @@ public class Main {
 
                                         // This is a very dumb way to do this. This whole block could possibly be removed.
                                         if (cleanedTranscript.contains("?") ||
-                                            cleanedTranscript.toLowerCase().startsWith("how") ||
-                                            cleanedTranscript.toLowerCase().startsWith("what") ||
-                                            cleanedTranscript.toLowerCase().startsWith("why") ||
-                                            cleanedTranscript.toLowerCase().startsWith("tell") ||
-                                            cleanedTranscript.toLowerCase().startsWith("when") ||
-                                            cleanedTranscript.toLowerCase().startsWith("who") ||
-                                            cleanedTranscript.toLowerCase().startsWith("where") ||
-                                            cleanedTranscript.toLowerCase().startsWith("can") ||
-                                            cleanedTranscript.toLowerCase().startsWith("could") ||
-                                            cleanedTranscript.toLowerCase().startsWith("would") ||
-                                            cleanedTranscript.toLowerCase().startsWith("should")) {
+                                            cleanedTranscript.toLowerCase().contains("how") ||
+                                            cleanedTranscript.toLowerCase().contains("what") ||
+                                            cleanedTranscript.toLowerCase().contains("why") ||
+                                            cleanedTranscript.toLowerCase().contains("tell") ||
+                                            cleanedTranscript.toLowerCase().contains("when") ||
+                                            cleanedTranscript.toLowerCase().contains("who") ||
+                                            cleanedTranscript.toLowerCase().contains("where") ||
+                                            cleanedTranscript.toLowerCase().contains("can") ||
+                                            cleanedTranscript.toLowerCase().contains("could") ||
+                                            cleanedTranscript.toLowerCase().contains("would") ||
+                                            cleanedTranscript.toLowerCase().contains("should")) {
 
                                             // Make API call to OpenAI or Cerebras
                                             processApiRequest(cleanedTranscript);

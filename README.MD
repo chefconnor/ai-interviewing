@@ -24,6 +24,11 @@ Even if you are in a one-party consent state, it is still illegal to record conv
 ## Technical details
 It is set up to use Cerebras AI, because it is the fastest available. Grok would also be acceptable. OpenAI is not fast enough to be useful in conversation.
 
+The application uses VAD to check if there is speech in the stream, so that Google Voice STT is not called on an empty stream. You will need to install the VAD library, perhaps with:
+pip3 install -r /Users/c/IdeaProjects/untitled1/python-vad-detector/requirements.txt
+pip3 install setuptools webrtcvad
+The java app will start it up for you.
+
 ### Usage
 
 You will need to set an environment variable for the API key.

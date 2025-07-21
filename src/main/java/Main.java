@@ -18,6 +18,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import com.github.kwhat.jnativehook.NativeHookException;
 
 public class Main {
     private static final String OPENAI_API_KEY = System.getenv("OPENAI_API_KEY");
@@ -37,6 +38,16 @@ public class Main {
 
     // Flag to determine if AI output should be separated
     private static boolean separateAiOutput = Boolean.parseBoolean(System.getProperty("separate.ai.output", "false"));
+    
+    // VAD checker instance
+    private static VADChecker vadChecker = new VADChecker();
+    
+    // Global hotkey listener
+    private static GlobalHotkeyListener hotkeyListener;
+    
+    // Transcript buffer and navigation
+    private static TranscriptBuffer transcriptBuffer = new TranscriptBuffer();
+    private static TranscriptNavigationHandler navigationHandler;
 
     public static void main(String[] args) throws LineUnavailableException {
         // Initialize separate output stream if requested
@@ -106,12 +117,36 @@ public class Main {
         microphone.open(format);
 
         try {
+            // Initialize VAD checker
+            regularOutput.println("Initializing Voice Activity Detector...");
+            vadChecker.start();
+            
+            // Initialize global hotkey listener
+            try {
+                hotkeyListener = new GlobalHotkeyListener() {
+                    @Override
+                    protected void onHotkeyPressed() {
+                        // Custom action when hotkey is pressed
+                        regularOutput.println("\n[HOTKEY] Alt+Ctrl+Shift+W pressed!");
+                        // You can add more functionality here later
+                    }
+                };
+                hotkeyListener.register();
+                
+                // Initialize transcript navigation handler
+                navigationHandler = new TranscriptNavigationHandler(transcriptBuffer, Main::processApiRequest);
+                navigationHandler.register();
+            } catch (Exception e) {
+                regularOutput.println("Warning: Could not register global hotkey listeners: " + e.getMessage());
+                // Continue without hotkey support
+            }
             // Google Speech-to-Text streaming setup
             // Set up credentials with quota project ID
             SpeechSettings settings = SpeechSettings.newBuilder()
                     .setQuotaProjectId("bettnet-sporting")
                     .build();
-            try (SpeechClient speechClient = SpeechClient.create(settings)) {
+            SpeechClient speechClient = SpeechClient.create(settings);
+            try {
                 RecognitionConfig recConfig = RecognitionConfig.newBuilder()
                         .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
                         .setLanguageCode("en-US")
@@ -121,24 +156,28 @@ public class Main {
                         .setConfig(recConfig)
                         .setInterimResults(true)
                         .build();
-                BidiStream<StreamingRecognizeRequest, StreamingRecognizeResponse> stream =
-                        speechClient.streamingRecognizeCallable().call();
-                // Send the initial configuration message
-                stream.send(StreamingRecognizeRequest.newBuilder().setStreamingConfig(config).build());
+                
                 regularOutput.println("Capturing audio and streaming to Google Speech-to-Text...");
                 byte[] buffer = new byte[4096];
                 microphone.start();
-
-                // Create a thread for reading responses to avoid blocking the audio capture
-                Thread responseThread = new Thread(() -> {
+                
+                // Shared state for response handling
+                final Object responseLock = new Object();
+                final boolean[] hasInterimResult = {false};
+                final Thread[] currentResponseThread = {null};
+                final BidiStream<StreamingRecognizeRequest, StreamingRecognizeResponse>[] currentStream = new BidiStream[]{null};
+                
+                // Response handler that can work with multiple streams
+                Runnable responseHandler = () -> {
+                    BidiStream<StreamingRecognizeRequest, StreamingRecognizeResponse> myStream;
+                    synchronized (responseLock) {
+                        myStream = currentStream[0];
+                    }
+                    
                     try {
-                        StringBuilder interimTranscript = new StringBuilder();
-                        Iterator<StreamingRecognizeResponse> responseIterator = stream.iterator();
-                        while (responseIterator.hasNext()) {
+                        Iterator<StreamingRecognizeResponse> responseIterator = myStream.iterator();
+                        while (responseIterator.hasNext() && !Thread.currentThread().isInterrupted()) {
                             StreamingRecognizeResponse response = responseIterator.next();
-
-                            // Handle interim results differently from final results
-                            boolean hasInterimResult = false;
 
                             for (StreamingRecognitionResult result : response.getResultsList()) {
                                 String transcript = result.getAlternatives(0).getTranscript();
@@ -146,13 +185,19 @@ public class Main {
 
                                 if (isFinal) {
                                     // Clear any interim display
-                                    if (hasInterimResult) {
-                                        regularOutput.print("\r" + " ".repeat(80) + "\r");
+                                    synchronized (responseLock) {
+                                        if (hasInterimResult[0]) {
+                                            regularOutput.print("\r" + " ".repeat(80) + "\r");
+                                            hasInterimResult[0] = false;
+                                        }
                                     }
 
                                     // Print final results with clear formatting
                                     String cleanedTranscript = transcript.trim();
                                     if (!cleanedTranscript.isEmpty()) {
+                                        // Add to transcript buffer
+                                        transcriptBuffer.addTranscript(cleanedTranscript);
+                                        
                                         // Output to both regular and AI outputs with better formatting
                                         String formattedOutput = "USER: " + cleanedTranscript;
                                         regularOutput.println(formattedOutput);
@@ -161,41 +206,26 @@ public class Main {
                                         if (aiOutput != regularOutput) {
                                             aiOutput.println(formattedOutput);
                                         }
-
-                                        // This is a very dumb way to do this. This whole block could possibly be removed.
-                                        if (cleanedTranscript.contains("?") ||
-                                            cleanedTranscript.toLowerCase().contains("how") ||
-                                            cleanedTranscript.toLowerCase().contains("what") ||
-                                            cleanedTranscript.toLowerCase().contains("why") ||
-                                            cleanedTranscript.toLowerCase().contains("tell") ||
-                                            cleanedTranscript.toLowerCase().contains("when") ||
-                                            cleanedTranscript.toLowerCase().contains("who") ||
-                                            cleanedTranscript.toLowerCase().contains("where") ||
-                                            cleanedTranscript.toLowerCase().contains("can") ||
-                                            cleanedTranscript.toLowerCase().contains("could") ||
-                                            cleanedTranscript.toLowerCase().contains("would") ||
-                                            cleanedTranscript.toLowerCase().contains("should")) {
-
-                                            // Make API call to OpenAI or Cerebras
-                                            processApiRequest(cleanedTranscript);
-                                        }
+                                        
+                                        // No longer auto-submitting questions - only submit via CMD+ALT+W
                                     }
                                 }
                                 else {
                                     // Show interim results - with better formatting
-                                    hasInterimResult = true;
+                                    synchronized (responseLock) {
+                                        hasInterimResult[0] = true;
+                                    }
                                     String interimText = "\rInterim: " + transcript;
                                     regularOutput.print(interimText);
                                 }
                             }
                         }
                     } catch (Exception e) {
-                        regularOutput.println("Error in response thread: " + e.getMessage());
-                        e.printStackTrace();
+                        if (!Thread.currentThread().isInterrupted()) {
+                            regularOutput.println("\nResponse thread error: " + e.getMessage());
+                        }
                     }
-                });
-                responseThread.setDaemon(true);
-                responseThread.start();
+                };
 
                 // Add a keyboard input handler thread to watch for command keys
                 Thread keyboardThread = new Thread(() -> {
@@ -252,14 +282,148 @@ public class Main {
                 keyboardThread.setDaemon(true);
                 keyboardThread.start();
 
-                // Audio capture loop
+                // Initial stream creation
+                synchronized (responseLock) {
+                    currentStream[0] = speechClient.streamingRecognizeCallable().call();
+                    currentStream[0].send(StreamingRecognizeRequest.newBuilder().setStreamingConfig(config).build());
+                    currentResponseThread[0] = new Thread(responseHandler);
+                    currentResponseThread[0].setDaemon(true);
+                    currentResponseThread[0].start();
+                }
+                
+                // Audio capture loop with VAD
+                byte[] vadBuffer = new byte[320]; // 20ms chunks for VAD
+                boolean inSpeech = false;
+                int silenceCount = 0;
+                long streamStartTime = System.currentTimeMillis();
+                long lastKeepAlive = System.currentTimeMillis();
+                
                 while (!shouldExit) {
                     int bytesRead = microphone.read(buffer, 0, buffer.length);
                     if (bytesRead > 0) {
-                        stream.send(StreamingRecognizeRequest.newBuilder()
-                                .setAudioContent(ByteString.copyFrom(buffer, 0, bytesRead))
-                                .build());
+                        // Check VAD for the first chunk to detect speech start/end
+                        boolean currentlySpeaking = false;
+                        if (bytesRead >= 320) {
+                            System.arraycopy(buffer, 0, vadBuffer, 0, 320);
+                            try {
+                                currentlySpeaking = vadChecker.isSpeech(vadBuffer);
+                            } catch (IOException e) {
+                                regularOutput.println("VAD error: " + e.getMessage());
+                                currentlySpeaking = true; // Default to sending audio on VAD error
+                            }
+                        }
+                        
+                        // Update speech state
+                        if (currentlySpeaking) {
+                            if (!inSpeech) {
+//                                regularOutput.println("\n[Speech detected]");
+                            }
+                            inSpeech = true;
+                            silenceCount = 0;
+                        } else if (inSpeech) {
+                            silenceCount++;
+                            // Stop sending after 500ms of silence (25 chunks * 20ms)
+                            if (silenceCount > 25) {
+                                inSpeech = false;
+//                                regularOutput.println("\n[Speech ended]");
+                            }
+                        }
+                        
+                        // Check if we need to reconnect (50 seconds limit to be safe)
+                        if (System.currentTimeMillis() - streamStartTime > 50000) {
+                            regularOutput.println("\n[Reconnecting stream to avoid timeout...]");
+                            
+                            synchronized (responseLock) {
+                                // Close old stream
+                                if (currentStream[0] != null) {
+                                    try {
+                                        currentStream[0].closeSend();
+                                    } catch (Exception e) {
+                                        // Ignore errors on close
+                                    }
+                                }
+                                
+                                // Interrupt old response thread
+                                if (currentResponseThread[0] != null) {
+                                    currentResponseThread[0].interrupt();
+                                    try {
+                                        currentResponseThread[0].join(1000);
+                                    } catch (InterruptedException e) {
+                                        Thread.currentThread().interrupt();
+                                    }
+                                }
+                                
+                                // Create new stream
+                                try {
+                                    currentStream[0] = speechClient.streamingRecognizeCallable().call();
+                                    currentStream[0].send(StreamingRecognizeRequest.newBuilder().setStreamingConfig(config).build());
+                                    currentResponseThread[0] = new Thread(responseHandler);
+                                    currentResponseThread[0].setDaemon(true);
+                                    currentResponseThread[0].start();
+                                    streamStartTime = System.currentTimeMillis();
+                                    regularOutput.println("[Stream reconnected successfully]");
+                                } catch (Exception e) {
+                                    regularOutput.println("Failed to reconnect stream: " + e.getMessage());
+                                    shouldExit = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Send audio when in speech mode
+                        if (inSpeech || currentlySpeaking) {
+                            synchronized (responseLock) {
+                                if (currentStream[0] != null) {
+                                    try {
+                                        currentStream[0].send(StreamingRecognizeRequest.newBuilder()
+                                                .setAudioContent(ByteString.copyFrom(buffer, 0, bytesRead))
+                                                .build());
+                                        lastKeepAlive = System.currentTimeMillis();
+                                    } catch (Exception e) {
+                                        regularOutput.println("\nError sending audio: " + e.getMessage());
+                                    }
+                                }
+                            }
+                        } else {
+                            // Send minimal keep-alive audio every 5 seconds during silence
+                            long currentTime = System.currentTimeMillis();
+                            if (currentTime - lastKeepAlive > 5000) {
+                                synchronized (responseLock) {
+                                    if (currentStream[0] != null) {
+                                        try {
+                                            // Send a tiny amount of silence to keep connection alive
+                                            byte[] silence = new byte[320];
+                                            currentStream[0].send(StreamingRecognizeRequest.newBuilder()
+                                                    .setAudioContent(ByteString.copyFrom(silence))
+                                                    .build());
+                                            lastKeepAlive = currentTime;
+                                        } catch (Exception e) {
+                                            // Ignore keep-alive errors
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
+                }
+                // Clean up streaming resources
+                synchronized (responseLock) {
+                    if (currentStream[0] != null) {
+                        try {
+                            currentStream[0].closeSend();
+                        } catch (Exception e) {
+                            // Ignore
+                        }
+                    }
+                    if (currentResponseThread[0] != null) {
+                        currentResponseThread[0].interrupt();
+                    }
+                }
+                
+            } finally {
+                // Close speech client
+                if (speechClient != null) {
+                    speechClient.close();
                 }
             }
         } catch (Exception e) {
@@ -269,6 +433,30 @@ public class Main {
             if (microphone != null && microphone.isOpen()) {
                 microphone.close();
             }
+            
+            // Stop VAD checker
+            try {
+                vadChecker.stop();
+                regularOutput.println("VAD checker stopped.");
+            } catch (Exception e) {
+                regularOutput.println("Error stopping VAD: " + e.getMessage());
+            }
+            
+            // Unregister hotkey listeners
+            if (hotkeyListener != null) {
+                try {
+                    hotkeyListener.unregister();
+                    regularOutput.println("Hotkey listener unregistered.");
+                } catch (Exception e) {
+                    regularOutput.println("Error unregistering hotkey listener: " + e.getMessage());
+                }
+            }
+            
+            if (navigationHandler != null) {
+                navigationHandler.unregister();
+                regularOutput.println("Navigation handler unregistered.");
+            }
+            
 
             // Close output streams if they were separately created
             if (separateAiOutput && aiOutput != System.out) {

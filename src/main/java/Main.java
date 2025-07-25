@@ -19,6 +19,7 @@ import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import com.github.kwhat.jnativehook.NativeHookException;
+import com.github.kwhat.jnativehook.GlobalScreen;
 
 public class Main {
     private static final String OPENAI_API_KEY = System.getenv("OPENAI_API_KEY");
@@ -121,6 +122,54 @@ public class Main {
             regularOutput.println("Initializing Voice Activity Detector...");
             vadChecker.start();
             
+            // Initialize global native hook system first
+            try {
+                GlobalScreen.registerNativeHook();
+            } catch (NativeHookException e) {
+                regularOutput.println("Error: Could not register native keyboard hook: " + e.getMessage());
+                return;
+            }
+            
+            // Initialize key bindings
+            KeyBindingConfig keyConfig = new KeyBindingConfig();
+            keyConfig.loadFromFile();
+            
+            // Always prompt for configuration
+            Scanner configScanner = new Scanner(System.in);
+            regularOutput.println("\n" + "=".repeat(80));
+            regularOutput.println("KEY BINDING CONFIGURATION");
+            regularOutput.println("=".repeat(80));
+            
+            boolean hasExistingBindings = keyConfig.getBinding(KeyBindingConfig.Action.SUBMIT) != null;
+            if (hasExistingBindings) {
+                regularOutput.println("Existing key bindings found.");
+                regularOutput.print("Reconfigure key bindings? (Y/N): ");
+            } else {
+                regularOutput.println("No key bindings found. Configuration is required.");
+                regularOutput.print("Configure key bindings now? (Y/N): ");
+            }
+            
+            String response = configScanner.nextLine().trim().toUpperCase();
+            
+            if (response.equals("Y") || response.equals("YES") || !hasExistingBindings) {
+                if (!hasExistingBindings && !response.equals("Y") && !response.equals("YES")) {
+                    regularOutput.println("\nKey binding configuration is mandatory for first-time use.");
+                }
+                try {
+                    KeyBindingSetup setup = new KeyBindingSetup(keyConfig);
+                    setup.setupBindings();
+                } catch (Exception e) {
+                    regularOutput.println("Error setting up key bindings: " + e.getMessage());
+                    regularOutput.println("Cannot continue without key bindings. Exiting.");
+                    return;
+                }
+            } else {
+                regularOutput.println("Using existing key bindings.");
+            }
+            
+            // Set config on transcript buffer for display
+            transcriptBuffer.setKeyConfig(keyConfig);
+            
             // Initialize global hotkey listener
             try {
                 hotkeyListener = new GlobalHotkeyListener() {
@@ -133,8 +182,8 @@ public class Main {
                 };
                 hotkeyListener.register();
                 
-                // Initialize transcript navigation handler
-                navigationHandler = new TranscriptNavigationHandler(transcriptBuffer, Main::processApiRequest);
+                // Initialize transcript navigation handler with config
+                navigationHandler = new TranscriptNavigationHandler(transcriptBuffer, Main::processApiRequest, keyConfig);
                 navigationHandler.register();
             } catch (Exception e) {
                 regularOutput.println("Warning: Could not register global hotkey listeners: " + e.getMessage());
@@ -177,9 +226,9 @@ public class Main {
                     try {
                         Iterator<StreamingRecognizeResponse> responseIterator = myStream.iterator();
                         while (responseIterator.hasNext() && !Thread.currentThread().isInterrupted()) {
-                            StreamingRecognizeResponse response = responseIterator.next();
+                            StreamingRecognizeResponse nextResponse = responseIterator.next();
 
-                            for (StreamingRecognitionResult result : response.getResultsList()) {
+                            for (StreamingRecognitionResult result : nextResponse.getResultsList()) {
                                 String transcript = result.getAlternatives(0).getTranscript();
                                 boolean isFinal = result.getIsFinal();
 
@@ -457,6 +506,13 @@ public class Main {
                 regularOutput.println("Navigation handler unregistered.");
             }
             
+            // Unregister GlobalScreen
+            try {
+                GlobalScreen.unregisterNativeHook();
+                regularOutput.println("GlobalScreen unregistered.");
+            } catch (Exception e) {
+                regularOutput.println("Error unregistering GlobalScreen: " + e.getMessage());
+            }
 
             // Close output streams if they were separately created
             if (separateAiOutput && aiOutput != System.out) {
@@ -501,9 +557,9 @@ public class Main {
             }
 
             // Format and display the response on both outputs
-            regularOutput.println("\nAI: " + apiResponse + "\n");
+            regularOutput.println("AI: " + apiResponse);
             if (aiOutput != regularOutput) {
-                aiOutput.println("\nAI: " + apiResponse + "\n");
+                aiOutput.println("AI: " + apiResponse);
             }
         } catch (Exception e) {
             String errorMsg = "Error processing API request: " + e.getMessage();
@@ -553,9 +609,12 @@ public class Main {
         String jsonResponse = response.toString();
         int contentStart = jsonResponse.indexOf("\"content\":\"") + 11;
         int contentEnd = jsonResponse.indexOf("\"", contentStart);
-        return jsonResponse.substring(contentStart, contentEnd)
+        String responseSubstr = jsonResponse.substring(contentStart, contentEnd)
                .replace("\\n", "\n")
-               .replace("\\\"", "\"");
+               .replace("\\\"", "\"")
+               .trim();
+        // Collapse multiple newlines into single newlines
+        return responseSubstr.replaceAll("\n\n+", "\n");
     }
 
     private static String callCerebras(String question) throws IOException {
@@ -565,8 +624,8 @@ public class Main {
         // Force refresh the current instruction by explicitly requesting it
         String currentInstruction = InstructionManager.get();
 
-        // Extra debugging to confirm we're using the correct instruction
-        regularOutput.println("FINAL VERIFICATION - Using instruction: \"" + currentInstruction + "\"");
+        // Extra debugging to confirm we're using the correct instruction (disabled)
+        // regularOutput.println("FINAL VERIFICATION - Using instruction: \"" + currentInstruction + "\"");
 
         // Create the request body for Cerebras API format
         String jsonInputString = String.format(
@@ -584,9 +643,9 @@ public class Main {
             question.replace("\"", "\\\"")
         );
 
-        // Debug: Log the actual instruction and request being used
-        regularOutput.println("DEBUG - Sending Cerebras API request with system instruction: \"" + currentInstruction + "\"");
-        regularOutput.println("DEBUG - Full request body: " + jsonInputString);
+        // Debug: Log the actual instruction and request being used (disabled)
+        // regularOutput.println("DEBUG - Sending Cerebras API request with system instruction: \"" + currentInstruction + "\"");
+        // regularOutput.println("DEBUG - Full request body: " + jsonInputString);
 
         // Check if we should actually make the API request
         if (ENABLE_API_REQUESTS) {
@@ -635,10 +694,12 @@ public class Main {
             int contentStart = jsonResponse.indexOf("\"content\":\"") + 11;
             int contentEnd = jsonResponse.indexOf("\"", contentStart);
             if (contentStart > 7 && contentEnd > contentStart) {
-                return jsonResponse.substring(contentStart, contentEnd)
+                String responseSubstr = jsonResponse.substring(contentStart, contentEnd)
                        .replace("\\n", "\n")
                        .replace("\\\"", "\"")
                        .trim();
+                // Collapse multiple newlines into single newlines
+                return responseSubstr.replaceAll("\n\n+", "\n");
             } else {
                 // Fallback for parsing errors
                 regularOutput.println("Warning: Failed to parse Cerebras API response. Raw response: " + jsonResponse);

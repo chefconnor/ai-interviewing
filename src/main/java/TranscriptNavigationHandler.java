@@ -54,8 +54,13 @@ public class TranscriptNavigationHandler implements NativeKeyListener {
         // Find matching action
         KeyBindingConfig.Action action = config.findAction(keyCode, modifiers);
         
-        // Execute action if not already pressed
-        if (action != null && action != currentAction) {
+        // Handle MUTE_WHILE_HELD specially
+        if (action == KeyBindingConfig.Action.MUTE_WHILE_HELD) {
+            Main.setMuted(true);
+            currentAction = action;
+        }
+        // Execute other actions if not already pressed
+        else if (action != null && action != currentAction) {
             currentAction = action;
             executeAction(action);
         }
@@ -70,6 +75,10 @@ public class TranscriptNavigationHandler implements NativeKeyListener {
         if (currentAction != null) {
             KeyBindingConfig.KeyBinding binding = config.getBinding(currentAction);
             if (binding != null && binding.getKeyCode() == keyCode) {
+                // If releasing the mute key, unmute
+                if (currentAction == KeyBindingConfig.Action.MUTE_WHILE_HELD) {
+                    Main.setMuted(false);
+                }
                 currentAction = null;
             }
         }

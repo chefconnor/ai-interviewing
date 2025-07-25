@@ -49,6 +49,17 @@ public class Main {
     // Transcript buffer and navigation
     private static TranscriptBuffer transcriptBuffer = new TranscriptBuffer();
     private static TranscriptNavigationHandler navigationHandler;
+    
+    // Mute state for push-to-mute functionality
+    private static volatile boolean isMuted = false;
+    
+    public static void setMuted(boolean muted) {
+        isMuted = muted;
+    }
+    
+    public static boolean isMuted() {
+        return isMuted;
+    }
 
     public static void main(String[] args) throws LineUnavailableException {
         // Initialize separate output stream if requested
@@ -419,8 +430,8 @@ public class Main {
                             }
                         }
                         
-                        // Send audio when in speech mode
-                        if (inSpeech || currentlySpeaking) {
+                        // Send audio when in speech mode and not muted
+                        if ((inSpeech || currentlySpeaking) && !isMuted) {
                             synchronized (responseLock) {
                                 if (currentStream[0] != null) {
                                     try {

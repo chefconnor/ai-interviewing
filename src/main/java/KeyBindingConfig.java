@@ -10,7 +10,8 @@ public class KeyBindingConfig {
         SLURP_PREVIOUS("Slurp Previous"),
         SUBMIT("Submit Selection"),
         CONTINUOUS_MODE("Toggle Continuous Mode"),
-        CLEAR_SELECTION("Clear Selection");
+        CLEAR_SELECTION("Clear Selection"),
+        MUTE_WHILE_HELD("Mute While Held");
         
         private final String displayName;
         

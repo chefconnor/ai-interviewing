@@ -238,6 +238,8 @@ public class TranscriptBuffer {
                 keyConfig.getDisplayString(KeyBindingConfig.Action.SUBMIT),
                 keyConfig.getDisplayString(KeyBindingConfig.Action.CONTINUOUS_MODE),
                 keyConfig.getDisplayString(KeyBindingConfig.Action.CLEAR_SELECTION)));
+            display.append(String.format("Audio: %s = Mute (hold to pause capture)%n",
+                keyConfig.getDisplayString(KeyBindingConfig.Action.MUTE_WHILE_HELD)));
         } else {
             display.append("Navigation: Key bindings not configured\n");
         }
